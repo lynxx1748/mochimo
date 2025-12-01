@@ -23,6 +23,9 @@
 #include "peach_opencl.c"
 #endif
 
+/* Stratum support (pool mining) */
+#include "stratum.c"
+
 /* internal support */
 #include "types.h"   /* for standard mochimo datatypes */
 #include "tfile.h"   /* for merkle_root() */
@@ -112,6 +115,13 @@ BTRAILER BT_curr = {0};
 BTRAILER BT_prev = {0};
 FILE *FP_curr = NULL;
 FILE *FP_prev = NULL;
+
+/* Stratum pool mining support */
+STRATUM_CTX Stratum = {0};
+char Pool_host[256] = {0};
+int Pool_port = 3336;
+char Worker_name[64] = "worker1";
+char Wallet_addr[64] = {0};  /* Base58 wallet address */
 
 /**
  * @private
@@ -572,15 +582,18 @@ void sigterm(int sig)
 void print_usage(void)
 {
    fprintf(stdout,
-      "usage: mochiminer [options]\n"
+      "usage: gpuminer [options]\n"
       "   -d, --device-interval <num>  device polling interval (ms)\n"
       "   -h, --host <HOST[,HOST]>     list of Headless Mining hosts\n"
       "   -i, --interval <num>         work polling time, in seconds\n"
       "   -l, --log-level <num>        level of detail in logging (0-5)\n"
       "   -m, --maddr <ADDR>           set or select mining address\n"
       "   -N, --node <HOST[,HOST]>     list of Node Mining target hosts\n"
-      "   -P, --pool <HOST[,HOST]>     list of Pool Mining target hosts\n"
-      "   -p, --port <num>             port number of target\n\n"
+      "   -P, --pool <HOST[:PORT]>     pool mining host (stratum)\n"
+      "   -p, --port <num>             port number of target\n"
+      "   -w, --worker <name>          worker name for pool mining\n\n"
+      "Pool Mining Example:\n"
+      "   gpuminer -P mochimo.luckypool.io:3336 -m <WALLET> -w myworker\n\n"
    );
 }
 
@@ -738,6 +751,8 @@ MCM_DECL_UNUSED
             }
             /* set and display mining address */
             set_maddr(maddr_chk);
+            /* Store wallet address for stratum pool mining */
+            strncpy(Wallet_addr, argp, sizeof(Wallet_addr) - 1);
             plog("Mining Address: %s", argp);
             plog("Mining Address(hex): %02x%02x%02x%02x...%02x%02x%02x%02x",
                maddr_chk[0], maddr_chk[1], maddr_chk[2], maddr_chk[3],
@@ -752,10 +767,27 @@ MCM_DECL_UNUSED
             continue; /* next arg */
          }
          if (argument(argv[argi], "-P", "--pool")) {
-            /* obtain comma separated hosts value */
+            /* obtain pool host[:port] value */
             GET_ARGP_OR_EXIT_FAILURE(argp);
-            PARSE_PEERLIST_TOKENS(argp);
+            /* Parse host:port format */
+            char *colon = strchr(argp, ':');
+            if (colon) {
+               size_t hostlen = colon - argp;
+               if (hostlen >= sizeof(Pool_host)) hostlen = sizeof(Pool_host) - 1;
+               strncpy(Pool_host, argp, hostlen);
+               Pool_host[hostlen] = '\0';
+               Pool_port = atoi(colon + 1);
+            } else {
+               strncpy(Pool_host, argp, sizeof(Pool_host) - 1);
+            }
             miner_mode = POOL_MODE;
+            plog("Pool: %s:%d", Pool_host, Pool_port);
+            continue; /* next arg */
+         }
+         if (argument(argv[argi], "-w", "--worker")) {
+            /* obtain worker name */
+            GET_ARGP_OR_EXIT_FAILURE(argp);
+            strncpy(Worker_name, argp, sizeof(Worker_name) - 1);
             continue; /* next arg */
          }
          if (argument(argv[argi], "-p", "--port")) {
@@ -835,6 +867,22 @@ MCM_DECL_UNUSED
    }
    plog("Total GPU Devices: %d", device_count);
 
+   /* Initialize stratum for pool mining */
+   if (miner_mode == POOL_MODE) {
+      if (Pool_host[0] == '\0') {
+         perr("Pool mode requires -P <host:port>");
+         return EXIT_FAILURE;
+      }
+      if (Wallet_addr[0] == '\0') {
+         perr("Pool mode requires -m <wallet address>");
+         return EXIT_FAILURE;
+      }
+
+      plog("Pool Mining Mode: %s:%d", Pool_host, Pool_port);
+      plog("Worker: %s", Worker_name);
+      stratum_init(&Stratum, Pool_host, Pool_port, Wallet_addr, Worker_name);
+   }
+
    int paused = 1;
    int thread_idx = 1;
 
@@ -859,6 +907,7 @@ MCM_DECL_UNUSED
          case 2: {
             BTRAILER bt_solve = {0};
             time_t now;
+            int is_pool_mode = (miner_mode == POOL_MODE);
 
             /* set working block trailer to current */
             bt = &BT_curr;
@@ -868,16 +917,26 @@ MCM_DECL_UNUSED
             /* Device management loop */
             for (time(&now); Running; millisleep(Dynasleep), time(&now)) {
                /* pause solving when appropriate */
-               if (difftime(now, get32(bt->time0)) >= BRIDGEv3 ||
-                     BT_solve.nonce[0] || get32(bt->tcount) == 0) {
+               int should_pause = 0;
+               if (is_pool_mode) {
+                  /* Pool mode: pause only if no job or already solved */
+                  should_pause = (get32(bt->tcount) == 0) || BT_solve.nonce[0];
+               } else {
+                  /* Node mode: original pause conditions */
+                  should_pause = (difftime(now, get32(bt->time0)) >= BRIDGEv3) ||
+                                 BT_solve.nonce[0] || (get32(bt->tcount) == 0);
+               }
+
+               if (should_pause) {
                   if (!paused) {
                      /* report reason for pause */
-                     if (difftime(now, get32(bt->time0)) >= BRIDGEv3) {
+                     if (!is_pool_mode && difftime(now, get32(bt->time0)) >= BRIDGEv3) {
                         plog("Work Expired; waiting for work...");
                      } else if (get32(bt->tcount) == 0) {
-                        plog("No Transactions; waiting for work...");
+                        plog("Waiting for work from %s...",
+                           is_pool_mode ? "pool" : "node");
                      } else if (BT_solve.nonce[0]) {
-                        plog("Work Solved; waiting for work...");
+                        plog("Work Solved; waiting for new work...");
                      }
                      /* pause solving */
                      paused = 1;
@@ -914,18 +973,31 @@ MCM_DECL_UNUSED
                         perr("peach_check() failed to verify solve!");
                         continue;  /* ... device loop */
                      }
+
                      /* acquire (exclusive) lock */
                      MUTEX_LOCK_OR_ABORT(&Slock);
+
                      /* embed (valid) solve time and block hash */
                      put32(bt_solve.stime, (word32) time(NULL));
                      if (get32(bt_solve.time0) == get32(bt_solve.stime)) {
                         put32(bt_solve.stime, (word32) time(NULL) + 1);
                      }
                      sha256(&bt_solve, sizeof(BTRAILER) - HASHLEN, bt_solve.bhash);
-                     memcpy(&BT_solve, &bt_solve, sizeof(BTRAILER));
-                     pdebug("solve handed to network thread...");
-                     /* alert (sleeping) network thread */
-                     condition_signal(&Salarm);
+
+                     if (is_pool_mode) {
+                        /* Pool mode: submit share to stratum pool */
+                        plog("Share found! Submitting to pool...");
+                        stratum_submit(&Stratum, Stratum.current_job.job_id,
+                                      bt_solve.nonce, bt_solve.bhash);
+                        /* Don't set BT_solve - pool will send new job */
+                     } else {
+                        /* Node mode: hand to network thread */
+                        memcpy(&BT_solve, &bt_solve, sizeof(BTRAILER));
+                        pdebug("solve handed to network thread...");
+                        /* alert (sleeping) network thread */
+                        condition_signal(&Salarm);
+                     }
+
                      /* release (exclusive) lock */
                      MUTEX_UNLOCK_OR_ABORT(&Slock);
                   }  /* end if solve */
@@ -936,31 +1008,47 @@ MCM_DECL_UNUSED
          case 1: {
             double hps, total;
             const char *m;
+            time_t last_reconnect = 0;
 
             /* Task 1: Network handler */
             thread_setname(thread_self(), "network_handler");
-            /* exclusive "Running" loop... */
-            MUTEX_LOCK_OR_ABORT(&Slock);
-            while (Running) {
-               /* send solve or check network */
-               if (network_send_solve() == VEOK) {
-                  if (network_recv_cblock() == VEOK) {
-                     /* ... currently there is a period of time between
-                      * a block transition where a Node does not have
-                      * transactions to produce a candidate block and
-                      * will simply abort the connection. This results
-                      * in miners continuing to mine the previous block
-                      * until transactions appear on the next block, or
-                      * the BRIDGE time is reached... */
-                     /* report stats, or set block trailer to previous */
-                     if (bt) {
-                        /* only report on block changes */
-                        if (get32(bt->bnum) != get32(BT_curr.bnum)) {
+
+            if (miner_mode == POOL_MODE) {
+               /* Pool mining mode - stratum protocol */
+               while (Running) {
+                  /* Connect/reconnect to pool */
+                  if (!stratum_is_connected(&Stratum)) {
+                     time_t now = time(NULL);
+                     if (now - last_reconnect >= 5) {
+                        last_reconnect = now;
+                        if (stratum_connect(&Stratum) < 0) {
+                           pwarn("Pool connection failed, retrying in 5s...");
+                        }
+                     }
+                     millisleep(100);
+                     continue;
+                  }
+
+                  /* Process stratum messages */
+                  if (stratum_process(&Stratum) < 0) {
+                     pwarn("Pool connection lost");
+                     continue;
+                  }
+
+                  /* Check for new job */
+                  if (stratum_has_job(&Stratum)) {
+                     MUTEX_LOCK_OR_ABORT(&Slock);
+                     memcpy(&BT_prev, &BT_curr, sizeof(BTRAILER));
+                     if (stratum_get_job(&Stratum, &BT_curr) == 0) {
+                        /* Mark as valid by setting tcount to 1 (pool provides work) */
+                        put32(BT_curr.tcount, 1);
+                        memset(&BT_solve, 0, sizeof(BTRAILER));
+
+                        /* Report stats if block changed */
+                        if (bt && get32(bt->bnum) != get32(BT_curr.bnum)) {
                            total = 0.0;
-                           /* report block summary */
                            plog("Work summary; block %u(0x%x), difficulty %u",
                               get32(bt->bnum), get32(bt->bnum), bt->difficulty[0]);
-                           /* print block work stats and hashrate per device */
                            for (int idx = 0; idx < device_count; idx++) {
                               if (device[idx].status <= DEV_NULL) {
                                  plog(" - %s failure...", device[idx].info);
@@ -970,35 +1058,79 @@ MCM_DECL_UNUSED
                               hps = (double) device[idx].hps;
                               m = metric_reduce(&hps);
                               plog(" - %s %.02lf%sH/s", device[idx].info, hps, m);
-                           }  /* end device loop */
-                           /* repoort total hashrate if device count > 1 */
+                           }
                            if (device_count > 1) {
                               m = metric_reduce(&total);
                               plog(" - Total %.02lf%sH/s", total, m);
                            }
-                        }  /* end if bt */
-                     } else bt = &BT_prev;
-                     plog("New work; %s:%"P16u" %u(0x%x):%u:%s...",
-                        ntoa(Rplist, NULL), Dstport, get32(BT_curr.bnum),
-                        get32(BT_curr.bnum), BT_curr.difficulty[0],
-                        hash2hex32(BT_curr.mroot, NULL));
-                  } else if (errno != EAGAIN) {
-                     perrno("network_recv_cblock() FAILURE");
+                        }
+                        if (!bt) bt = &BT_prev;
+
+                        plog("New pool job; block %u(0x%x), difficulty %u",
+                           get32(BT_curr.bnum), get32(BT_curr.bnum),
+                           BT_curr.difficulty[0]);
+                     }
+                     MUTEX_UNLOCK_OR_ABORT(&Slock);
                   }
-               } else {
-                  perrno("network_send_solve() FAILURE");
-               }
-               /* wait for work, sleepy time (5 second timeout)... */
-               ecode = condition_timedwait(&Salarm, &Slock, interval_ms);
-               if (ecode != 0 && errno != CONDITION_TIMEOUT) {
-                  perrno("CONDITION FAILURE");
-                  Running = 0;
-                  break;
-               }
-            }  /* end while */
+
+                  millisleep(10);
+               }  /* end while Running (pool mode) */
+            } else {
+               /* Node mining mode - native protocol */
+               MUTEX_LOCK_OR_ABORT(&Slock);
+               while (Running) {
+                  /* send solve or check network */
+                  if (network_send_solve() == VEOK) {
+                     if (network_recv_cblock() == VEOK) {
+                        /* report stats, or set block trailer to previous */
+                        if (bt) {
+                           /* only report on block changes */
+                           if (get32(bt->bnum) != get32(BT_curr.bnum)) {
+                              total = 0.0;
+                              /* report block summary */
+                              plog("Work summary; block %u(0x%x), difficulty %u",
+                                 get32(bt->bnum), get32(bt->bnum), bt->difficulty[0]);
+                              /* print block work stats and hashrate per device */
+                              for (int idx = 0; idx < device_count; idx++) {
+                                 if (device[idx].status <= DEV_NULL) {
+                                    plog(" - %s failure...", device[idx].info);
+                                    continue;
+                                 }
+                                 total += (double) device[idx].hps;
+                                 hps = (double) device[idx].hps;
+                                 m = metric_reduce(&hps);
+                                 plog(" - %s %.02lf%sH/s", device[idx].info, hps, m);
+                              }  /* end device loop */
+                              /* report total hashrate if device count > 1 */
+                              if (device_count > 1) {
+                                 m = metric_reduce(&total);
+                                 plog(" - Total %.02lf%sH/s", total, m);
+                              }
+                           }  /* end if bt */
+                        } else bt = &BT_prev;
+                        plog("New work; %s:%"P16u" %u(0x%x):%u:%s...",
+                           ntoa(Rplist, NULL), Dstport, get32(BT_curr.bnum),
+                           get32(BT_curr.bnum), BT_curr.difficulty[0],
+                           hash2hex32(BT_curr.mroot, NULL));
+                     } else if (errno != EAGAIN) {
+                        perrno("network_recv_cblock() FAILURE");
+                     }
+                  } else {
+                     perrno("network_send_solve() FAILURE");
+                  }
+                  /* wait for work, sleepy time (5 second timeout)... */
+                  ecode = condition_timedwait(&Salarm, &Slock, interval_ms);
+                  if (ecode != 0 && errno != CONDITION_TIMEOUT) {
+                     perrno("CONDITION FAILURE");
+                     Running = 0;
+                     break;
+                  }
+               }  /* end while Running (node mode) */
+               /* release (exclusive) lock */
+               MUTEX_UNLOCK_OR_ABORT(&Slock);
+            }
+
             pdebug("network thread finished...");
-            /* release (exclusive) lock */
-            MUTEX_UNLOCK_OR_ABORT(&Slock);
             break;
          }  /* end Network Handler */
          default: {

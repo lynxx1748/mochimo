@@ -158,14 +158,20 @@ int init_opencl_devices(DEVICE_CTX *ctx, int len)
             ctx[total_devices].last = time(NULL);
             ctx[total_devices].peach = ocl;
             
-            /* Calculate work dimensions */
+            /* Calculate work dimensions optimized for modern GPUs */
             ctx[total_devices].block = (int)max_work_group;
             if (ctx[total_devices].block > 256) {
-                ctx[total_devices].block = 256; /* Cap for efficiency */
+                ctx[total_devices].block = 256;
             }
-            ctx[total_devices].grid = compute_units * 4; /* Heuristic */
+            /* RDNA3/RDNA2 work best with very high occupancy - use 256x multiplier */
+            /* For 48 CU GPU: 48 * 256 * 256 = 3,145,728 threads */
+            ctx[total_devices].grid = compute_units * 256;
             ctx[total_devices].threads = ctx[total_devices].grid * 
                                          ctx[total_devices].block;
+            
+            pdebug("Work dimensions: %d threads (%d groups x %d)",
+                   ctx[total_devices].threads, ctx[total_devices].grid,
+                   ctx[total_devices].block);
             
             /* Store work dimensions in OpenCL context */
             ocl->local_work_size = ctx[total_devices].block;
@@ -194,12 +200,53 @@ static char *load_kernel_source(size_t *len)
     FILE *fp;
     char *source = NULL;
     size_t file_size;
+    char exe_path[4000];
+    char kernel_path[4096];
     
-    /* Try to load from file first */
+    /* Try to load from file first - check current directory */
     fp = fopen("peach.cl", "rb");
     if (fp == NULL) {
         fp = fopen("src/peach.cl", "rb");
     }
+    
+    /* Try to find kernel relative to executable location */
+#ifndef _WIN32
+    if (fp == NULL) {
+        ssize_t exe_len = readlink("/proc/self/exe", exe_path, sizeof(exe_path) - 1);
+        if (exe_len > 0) {
+            exe_path[exe_len] = '\0';
+            /* Find last slash to get directory */
+            char *last_slash = strrchr(exe_path, '/');
+            if (last_slash != NULL) {
+                *last_slash = '\0';
+                snprintf(kernel_path, sizeof(kernel_path), "%s/peach.cl", exe_path);
+                fp = fopen(kernel_path, "rb");
+                if (fp == NULL) {
+                    /* Also try ../src/peach.cl relative to bin directory */
+                    snprintf(kernel_path, sizeof(kernel_path), "%s/../src/peach.cl", exe_path);
+                    fp = fopen(kernel_path, "rb");
+                }
+            }
+        }
+    }
+#else
+    if (fp == NULL) {
+        DWORD exe_len = GetModuleFileNameA(NULL, exe_path, sizeof(exe_path));
+        if (exe_len > 0) {
+            char *last_slash = strrchr(exe_path, '\\');
+            if (last_slash != NULL) {
+                *last_slash = '\0';
+                snprintf(kernel_path, sizeof(kernel_path), "%s\\peach.cl", exe_path);
+                fp = fopen(kernel_path, "rb");
+                if (fp == NULL) {
+                    snprintf(kernel_path, sizeof(kernel_path), "%s\\..\\src\\peach.cl", exe_path);
+                    fp = fopen(kernel_path, "rb");
+                }
+            }
+        }
+    }
+#endif
+    
     if (fp == NULL) {
         fp = fopen("/opt/mochimo/peach.cl", "rb");
     }

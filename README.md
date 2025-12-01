@@ -86,7 +86,7 @@ The GPU Miner supports **SOLO mining** with both NVIDIA and AMD GPUs:
 
 ### Standard Build (NVIDIA + AMD)
 ```sh
-git clone https://github.com/lynxx1478/mochimodev/mochimo.git
+git clone https://github.com/lynxx1478/mochimo.git
 make -C mochimo/ miner
 # mochimo/bin/gpuminer --help
 ```

@@ -899,8 +899,8 @@ word32 cl_peach_dflops(__private void *data, size_t len, word32 index, int txf)
 
 word32 cl_peach_dmemtx(__private void *data, size_t len, word32 op)
 {
-    __constant word64 c_flip64 = WORD64_C(0x8181818181818181);
-    __constant word32 c_flip32 = WORD32_C(0x81818181);
+    const word64 c_flip64 = WORD64_C(0x8181818181818181);
+    const word32 c_flip32 = WORD32_C(0x81818181);
     __private word64 *qp = (__private word64 *)data;
     __private word32 *dp = (__private word32 *)data;
     __private word8 *bp = (__private word8 *)data;
