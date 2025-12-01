@@ -119,10 +119,16 @@ int peach_checkhash(const BTRAILER *bt, word8 diff, void *out);
 int peach_init(const BTRAILER *bt);
 int peach_solve(const BTRAILER *bt, word8 diff, void *out);
 
-/* CUDA functions */
+/* CUDA functions (NVIDIA) */
 int peach_checkhash_cuda(int count, BTRAILER bt[], void *out);
 int peach_init_cuda_device(DEVICE_CTX *devp);
 int peach_solve_cuda(DEVICE_CTX *dev, BTRAILER *bt, word8 diff, BTRAILER *out);
+
+/* OpenCL functions (AMD, Intel, cross-platform) */
+int peach_checkhash_opencl(int count, BTRAILER bt[], void *out);
+int peach_init_opencl_device(DEVICE_CTX *devp);
+int peach_solve_opencl(DEVICE_CTX *dev, BTRAILER *bt, word8 diff, BTRAILER *out);
+void peach_free_opencl_device(DEVICE_CTX *devp);
 
 #ifdef __cplusplus
 }  /* end extern "C" */

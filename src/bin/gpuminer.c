@@ -17,6 +17,12 @@
 /* device support */
 #include "device.h"
 
+/* OpenCL support (AMD GPUs) */
+#ifndef NO_OPENCL
+#include "device_opencl.c"
+#include "peach_opencl.c"
+#endif
+
 /* internal support */
 #include "types.h"   /* for standard mochimo datatypes */
 #include "tfile.h"   /* for merkle_root() */
@@ -778,21 +784,56 @@ MCM_DECL_UNUSED
    plog("   https://mochimo.org/license (TEXT version)");
    printf("\n");
 
-   device_count = init_cuda_devices(device, GPUMAX);
+   device_count = 0;
+   
+   /* Initialize CUDA devices (NVIDIA) */
+#ifndef NO_CUDA
+   {
+      int cuda_count = init_cuda_devices(&device[device_count], GPUMAX - device_count);
+      if (cuda_count > 0) {
+         plog("CUDA Devices (%d)...", cuda_count);
+         for (int idx = device_count; Running && idx < device_count + cuda_count; idx++) {
+            plog(" - %s", device[idx].info);
+            pdebug("initializing CUDA device...");
+            if (peach_init_cuda_device(&device[idx]) != VEOK) {
+               perrno("CUDA peach initialization FAILURE");
+               pwarn("%s will not be utilized...", device[idx].info);
+            }
+         }
+         device_count += cuda_count;
+      } else if (cuda_count == 0) {
+         pdebug("No CUDA devices found");
+      }
+   }
+#endif
+
+   /* Initialize OpenCL devices (AMD, Intel, etc.) */
+#ifndef NO_OPENCL
+   {
+      int opencl_count = init_opencl_devices(&device[device_count], GPUMAX - device_count);
+      if (opencl_count > 0) {
+         plog("OpenCL Devices (%d)...", opencl_count);
+         for (int idx = device_count; Running && idx < device_count + opencl_count; idx++) {
+            plog(" - %s", device[idx].info);
+            pdebug("initializing OpenCL device...");
+            if (peach_init_opencl_device(&device[idx]) != VEOK) {
+               perrno("OpenCL peach initialization FAILURE");
+               pwarn("%s will not be utilized...", device[idx].info);
+            }
+         }
+         device_count += opencl_count;
+      } else if (opencl_count == 0) {
+         pdebug("No OpenCL devices found");
+      }
+   }
+#endif
+
    if (device_count < 1) {
-      perr("No CUDA devices found.");
+      perr("No GPU devices found (CUDA or OpenCL).");
       plog("Mining will not be possible...");
       return EXIT_FAILURE;
    }
-   plog("Cuda Devices (%d)...", device_count);
-   for (int idx = 0; Running && idx < device_count; idx++) {
-      plog(" - %s", device[idx].info);
-      pdebug("initilizing device...");
-      if (peach_init_cuda_device(&device[idx]) != VEOK) {
-         perrno("peach initialization FAILURE");
-         pwarn("%s will not be utilized...", device[idx].info);
-      }
-   }
+   plog("Total GPU Devices: %d", device_count);
 
    int paused = 1;
    int thread_idx = 1;
@@ -852,12 +893,16 @@ MCM_DECL_UNUSED
                for (int idx = 0; idx < device_count && !paused; idx++) {
                   /* execute solve protocol per device type */
                   switch (device[idx].type) {
+#ifndef NO_CUDA
                      case CUDA_DEVICE:
                         ecode = peach_solve_cuda(&device[idx], &BT_curr, 0, &bt_solve);
                         break;
-                  /* case OPENCL_DEVICE:
-                        solve = peach_solve_opencl(&device[idx], &BT_curr, 0, &bt);
-                        break; */
+#endif
+#ifndef NO_OPENCL
+                     case OPENCL_DEVICE:
+                        ecode = peach_solve_opencl(&device[idx], &BT_curr, 0, &bt_solve);
+                        break;
+#endif
                      default:
                         /* skip */
                         continue;

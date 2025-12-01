@@ -16,7 +16,7 @@
 prior to running the code.*
 
 **This repository is home to the Mochimo Cryptocurrency Engine code (main-net).**<br/>
-It includes a fully functional cryptocurrency network node and (NVIDIA-only) GPU Miner. Designed to compile for most 64-bit Linux-based machines using the provided GNU Makefile. However, please note that some systems may require additional compilation parameters to build successfully.
+It includes a fully functional cryptocurrency network node and GPU Miner with support for both **NVIDIA (CUDA)** and **AMD (OpenCL)** GPUs. Designed to compile for most 64-bit Linux-based machines using the provided GNU Makefile. However, please note that some systems may require additional compilation parameters to build successfully.
 
 </div>
 
@@ -72,25 +72,59 @@ To uninstall a Mochimo Node installed as a service, find your mochimo repositori
 <hr><hr>
 <h1 align="center"><strong>MINER INSTRUCTIONS</strong></h1>
 
+## GPU Miner Requirements
+The GPU Miner supports **SOLO mining** with both NVIDIA and AMD GPUs:
+
+| GPU Type | Technology | Requirements |
+|----------|------------|--------------|
+| **NVIDIA** | CUDA | [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) compatible with your GPU |
+| **AMD** | OpenCL | OpenCL runtime (included with AMD drivers) + `opencl-headers` package |
+
+**Minimum GPU Memory:** 1.2GB VRAM (1GB for Peach map + overhead)
+
 ## Build GPU Miner
-*GPU Miner ONLY supports SOLO mining with NVIDIA cards*<br/>
-Building GPU Miner from source requires an appropriate [CUDA Toolkit](https://developer.nvidia.com/cuda-downloads) installation compatible with your target GPUs.
+
+### Standard Build (NVIDIA + AMD)
 ```sh
 git clone https://github.com/mochimodev/mochimo.git
 make -C mochimo/ miner
 # mochimo/bin/gpuminer --help
 ```
-... if you have 10-series NVIDIA cards or lower, compile for your target architecture:
+
+### NVIDIA-Only Build
+```sh
+make -C mochimo/ miner NO_OPENCL=1
+```
+
+### AMD-Only Build (OpenCL)
+```sh
+make -C mochimo/ miner NO_CUDA=1
+```
+
+### Legacy NVIDIA Cards (10-series or lower)
+If you have 10-series NVIDIA cards or lower, compile for your target architecture:
 ```sh
 make -C mochimo/ miner NVCCARGS=-arch=sm_61 # 10-series cards
-# mochimo/bin/gpuminer --help
+```
+
+## Install OpenCL for AMD GPUs
+On Debian/Ubuntu systems:
+```sh
+# Install OpenCL headers
+sudo apt install opencl-headers
+
+# AMD GPU drivers should include OpenCL runtime
+# Alternatively, install the open-source OpenCL implementation:
+sudo apt install pocl-opencl-icd
 ```
 
 ## Run GPU Miner
 
-```
+```sh
 mochimo/bin/gpuminer -N <YOUR_NODE_IP> -m <YOUR_ACCOUNT_TAG>
 ```
+
+The miner will automatically detect and use all compatible GPUs (both NVIDIA and AMD simultaneously).
 
 <hr><hr>
 <h1 align="center"><strong>MOCHIMO LICENSE</strong></h1>

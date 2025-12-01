@@ -10,6 +10,13 @@ SHELL:= bash
 # system directories
 CUDADIR:= /usr/local/cuda
 
+# OpenCL detection (for AMD GPU support)
+# Check for OpenCL in common locations including CUDA's OpenCL
+OPENCL_AVAILABLE := $(if $(NO_OPENCL),,$(shell \
+	test -f /usr/include/CL/cl.h && \
+	(ldconfig -p 2>/dev/null | grep -q libOpenCL || \
+	 test -f $(CUDADIR)/targets/x86_64-linux/lib/libOpenCL.so.1) && echo "yes"))
+
 # project directories
 BINDIR:= bin
 BUILDDIR:= build
@@ -49,30 +56,35 @@ OBJECTS := $(COBJS) $(if $(NVCC),$(CUOBJS))
 # test coverage file
 COVERAGE := $(BUILDDIR)/coverage.info
 
-# library names: submodule, cuda, base
+# library names: submodule, cuda, opencl, base
 SUBLIBRARIES := $(patsubst $(SUBDIR)/%,%,$(SUBDIRS))
 CULIBRARIES := $(if $(NVCC),cudart_static dl rt stdc++)
+# Use versioned library name since libOpenCL.so symlink may not exist
+CLLIBRARIES := $(if $(OPENCL_AVAILABLE),:libOpenCL.so.1)
 LIBRARY := $(lastword $(notdir $(realpath .)))
 
 # library files: submodule, base
 SUBLIBRARYFILES := $(join $(SUBDIRS),$(patsubst $(SUBDIR)/%,/$(BUILDDIR)/lib%.a,$(SUBDIRS)))
 LIBRARYFILE := $(BUILDDIR)/lib$(LIBRARY).a
 
-# library directories: submodule, cuda
+# library directories: submodule, cuda, opencl
 SUBLIBRARYDIRS := $(addsuffix /$(BUILDDIR),$(SUBDIRS))
-CULIBRARYDIRS := $(if $(NVCC),$(addprefix $(CUDADIR),/lib64 /lib64/stubs))
+CULIBRARYDIRS := $(if $(NVCC),$(addprefix $(CUDADIR),/lib64 /lib64/stubs /targets/x86_64-linux/lib))
 
-# include directories: submodule, cuda
+# include directories: submodule, cuda, opencl
 SUBINCLUDEDIRS := $(addsuffix /$(SOURCEDIR),$(SUBDIRS))
 CUINCLUDEDIRS := $(if $(NVCC),$(CUDADIR)/include)
+CLINCLUDEDIRS := $(if $(OPENCL_AVAILABLE),$(shell pkg-config --cflags-only-I OpenCL 2>/dev/null | sed 's/-I//g'))
 
 # linker and compiler flags
 NVCFLAGS := -Xptxas -Werror
 CFLAGS := -MMD -MP -Wall -Werror -Wextra -Wpedantic -fopenmp -g -rdynamic
 DFLAGS := $(addprefix -D,$(DEFINES) VERSION=$(VERSION))
-IFLAGS := $(addprefix -I,$(SOURCEDIR) $(CUINCLUDEDIRS) $(SUBINCLUDEDIRS))
+DFLAGS += $(if $(NO_OPENCL),-DNO_OPENCL,)
+DFLAGS += $(if $(NO_CUDA),-DNO_CUDA,)
+IFLAGS := $(addprefix -I,$(SOURCEDIR) $(CUINCLUDEDIRS) $(CLINCLUDEDIRS) $(SUBINCLUDEDIRS))
 LFLAGS := $(addprefix -L,$(BUILDDIR) $(CULIBRARYDIRS) $(SUBLIBRARYDIRS))
-lFlags := -Wl,-\( $(addprefix -l,m $(LIBRARY) $(CULIBRARIES) $(SUBLIBRARIES)) -Wl,-\)
+lFlags := -Wl,-\( $(addprefix -l,m $(LIBRARY) $(CULIBRARIES) $(CLLIBRARIES) $(SUBLIBRARIES)) -Wl,-\)
 # ... working set of flags
 CCFLAGS := $(IFLAGS) $(DFLAGS) $(CFLAGS) $(CCARGS)
 LDFLAGS := $(LFLAGS) $(DFLAGS) $(CFLAGS) $(CCARGS) $(LDARGS) $(lFlags)
@@ -125,7 +137,8 @@ help:
 	@echo '   DEFINES="<defs>"'
 	@echo '      add preprocessor definitions to the C compiler'
 	@echo '      e.g. make all DEFINES="_GNU_SOURCE _XOPEN_SOURCE=600"'
-	@echo '   NO_CUDA=1           disable CUDA support'
+	@echo '   NO_CUDA=1           disable CUDA support (NVIDIA GPUs)'
+	@echo '   NO_OPENCL=1         disable OpenCL support (AMD/Intel GPUs)'
 	@echo '   NO_RECURSIVE=1      disable recursive submodule actions'
 	@echo '   NVCCARGS="<flags>"  add compiler args to the NVIDIA compiler'
 	@echo '   CCARGS="<flags>"    add compiler args to the C compiler'
@@ -207,6 +220,7 @@ $(SERVICE): .github/systemd/mochimo.service
 $(BINDIR)/gpuminer: $(BUILDDIR)/bin/gpuminer
 	@mkdir -p $(BINDIR)/
 	@cp $(BUILDDIR)/bin/gpuminer $(BINDIR)/
+	@cp $(SOURCEDIR)/peach.cl $(BINDIR)/ 2>/dev/null || true
 	@echo "$(BUILDDIR)/bin/gpuminer was updated..."
 
 $(BINDIR)/mochimo: $(BUILDDIR)/bin/mochimo
@@ -221,6 +235,7 @@ $(INSTALLDIR)/mochimo: $(BINDIR)/mochimo
 	@$(call require_sudo)
 	@mkdir -p /opt/mochimo/
 	@cp -r $(BINDIR)/* /opt/mochimo/
+	@cp $(SOURCEDIR)/peach.cl /opt/mochimo/ 2>/dev/null || true
 	@useradd -M -r -s /usr/sbin/nologin mcm || true
 	@chown -R mcm:mcm /opt/mochimo/
 	@echo "$(INSTALLDIR)/mochimo was updated..."

@@ -251,6 +251,8 @@ typedef char FILENAME[FILENAME_MAX];
    EMCM__ITEM(EMCM_CUDA, "Internal CUDA error") \
    EMCM__ITEM(EMCM_CUDA_LIMIT, "Number of CUDA devices will be limited") \
    EMCM__ITEM(EMCM_NVML, "Internal NVML error") \
+   EMCM__ITEM(EMCM_OPENCL, "Internal OpenCL error") \
+   EMCM__ITEM(EMCM_OPENCL_BUILD, "OpenCL kernel build failure") \
 
 
 /**
